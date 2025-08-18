@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: wweb-sticker-bot
+    env: docker
+    plan: free
+    autoDeploy: true
+    disk:
+      name: bot-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /data
+      - key: WWEB_AUTH_DIR
+        value: /data/.wweb-auth
+      - key: REMOVE_BG_API_KEY         # set value in the Render dashboard for safety
+        sync: false

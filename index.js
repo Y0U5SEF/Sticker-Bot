@@ -1,4 +1,23 @@
-// index.js
+// // top of index.js
+// const path = require('path');
+
+// const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');   // where settings live
+// const WWEB_AUTH_DIR = process.env.WWEB_AUTH_DIR || path.join(DATA_DIR, '.wweb-auth');
+
+// // when creating the client:
+// const client = new Client({
+//   authStrategy: new LocalAuth({ dataPath: WWEB_AUTH_DIR }),
+//   puppeteer: {
+//     headless: true,
+//     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+//     args: ['--no-sandbox','--disable-setuid-sandbox']
+//   },
+//   ffmpegPath: require('ffmpeg-static') || undefined,
+// });
+
+// wherever you set your data folder, use DATA_DIR instead of __dirname + '/data'
+
+require('dotenv').config();
 const qrcode = require('qrcode-terminal');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const sharp = require('sharp');
@@ -13,21 +32,52 @@ const axios = require('axios');
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 // ====== CONFIG ======
-const REMOVE_BG_API_KEY = 'mi7WPVJo4x5RReVpvryK3NZX';
-const DEFAULT_PACK   = 'My Pack';
-const DEFAULT_AUTHOR = 'Sticker Bot';
+const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY;
 
-// ====== PERSISTENCE (per-contact) ======
+// ====== DATA PATHS ======
 const DATA_DIR = path.join(__dirname, 'data');
-const SETTINGS_PATH = path.join(DATA_DIR, 'user-settings.json');
+const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');       // global defaults + mode
+const USER_SETTINGS_PATH = path.join(DATA_DIR, 'user-settings.json'); // per-user credits
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
-function loadUserSettingsSync() {
+
+// ====== LOAD / SAVE GLOBAL SETTINGS ======
+function loadSettingsSync() {
   ensureDataDir();
   try {
     const raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
+    const s = JSON.parse(raw);
+    return {
+      defaultPack:   s.defaultPack ?? 'My Pack',
+      defaultAuthor: s.defaultAuthor ?? 'Sticker Bot',
+      requireCaption: !!s.requireCaption,
+    };
+  } catch {
+    const defaults = { defaultPack: 'My Pack', defaultAuthor: 'Sticker Bot', requireCaption: false };
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(defaults, null, 2), 'utf8');
+    return defaults;
+  }
+}
+let SETTINGS = loadSettingsSync();
+async function saveSettings(newSettings) {
+  try {
+    ensureDataDir();
+    const tmp = SETTINGS_PATH + '.tmp';
+    await fsp.writeFile(tmp, JSON.stringify(newSettings, null, 2), 'utf8');
+    await fsp.rename(tmp, SETTINGS_PATH);
+    SETTINGS = newSettings; // Update the in-memory settings
+  } catch (e) {
+    console.error('Failed to save global settings:', e);
+  }
+}
+
+// ====== PER-USER CREDITS PERSISTENCE ======
+function loadUserSettingsSync() {
+  ensureDataDir();
+  try {
+    const raw = fs.readFileSync(USER_SETTINGS_PATH, 'utf8');
     return JSON.parse(raw) || {};
   } catch {
     return {};
@@ -36,11 +86,11 @@ function loadUserSettingsSync() {
 async function saveUserSettings(settings) {
   try {
     ensureDataDir();
-    const tmp = SETTINGS_PATH + '.tmp';
+    const tmp = USER_SETTINGS_PATH + '.tmp';
     await fsp.writeFile(tmp, JSON.stringify(settings, null, 2), 'utf8');
-    await fsp.rename(tmp, SETTINGS_PATH);
+    await fsp.rename(tmp, USER_SETTINGS_PATH);
   } catch (e) {
-    console.error('Failed to save settings:', e);
+    console.error('Failed to save user settings:', e);
   }
 }
 let USER_SETTINGS = loadUserSettingsSync();
@@ -54,29 +104,28 @@ function getCreditsFor(msg) {
   const id = getUserId(msg);
   const rec = USER_SETTINGS[id] || {};
   return {
-    name: rec.name || DEFAULT_PACK,
-    author: rec.author || DEFAULT_AUTHOR,
+    name:   rec.name   || SETTINGS.defaultPack,
+    author: rec.author || SETTINGS.defaultAuthor,
   };
 }
 async function setPackName(msg, value) {
   const id = getUserId(msg);
   USER_SETTINGS[id] = USER_SETTINGS[id] || {};
-  USER_SETTINGS[id].name = value || DEFAULT_PACK;
+  USER_SETTINGS[id].name = value || SETTINGS.defaultPack;
   await saveUserSettings(USER_SETTINGS);
 }
 async function setAuthor(msg, value) {
   const id = getUserId(msg);
   USER_SETTINGS[id] = USER_SETTINGS[id] || {};
-  USER_SETTINGS[id].author = value || DEFAULT_AUTHOR;
+  USER_SETTINGS[id].author = value || SETTINGS.defaultAuthor;
   await saveUserSettings(USER_SETTINGS);
 }
 
 // ====== CAPTION FLAGS ======
-const wantsSquare = (t = '') => {
-  const s = t.toLowerCase();
-  return s.includes('square') || s.includes('sqaure') || s.includes('1:1'); // tolerate typo
-};
-const wantsRbg = (t = '') => t.toLowerCase().split(/\s+/).includes('rbg'); // exact keyword
+const hasWord = (txt, w) => new RegExp(`\\b${w}\\b`, 'i').test(txt || '');
+const wantsSticker = (t='') => hasWord(t, 'sticker'); // used if requireCaption=true
+const wantsSquare  = (t='') => /\b(square|sqaure|1:1)\b/i.test(t || '');
+const wantsRbg     = (t='') => hasWord(t, 'rbg');
 
 // ====== MEDIA FETCH (robust) ======
 async function fetchMedia(msg) {
@@ -150,8 +199,7 @@ async function cropVideoToSquareFile(messageMedia /* MessageMedia */, { maxDur =
 }
 
 // ====== CLIENT ======
-let client; // forward-declared for helpers below
-client = new Client({
+const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wweb-auth' }),
   puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] },
   ffmpegPath: ffmpegPath || undefined,
@@ -173,13 +221,20 @@ async function sendSticker(msg, payload /* MessageMedia | string */) {
 
 // ====== MAIN STICKER FLOW ======
 async function replyWithSticker(msg) {
-  const media = await fetchMedia(msg);
-  if (!media) {
-    await msg.reply('⚠️ Could not download media. Send the media and the caption (e.g., "square" / "rbg") in the *same* message or reply directly to the media.');
+  const caption = msg.body || '';
+
+  // Respect the global mode: require "sticker" in caption or not
+  if (SETTINGS.requireCaption && !wantsSticker(caption)) {
+    // await msg.reply('ℹ️ Add the word *sticker* in the caption to convert. You can also add *square* (1:1) and *rbg* (images only).');
     return;
   }
 
-  const caption = msg.body || '';
+  const media = await fetchMedia(msg);
+  if (!media) {
+    await msg.reply('⚠️ Could not download media. Send the media and the caption (e.g., "sticker", "square", "rbg") in the *same* message or reply directly to the media.');
+    return;
+  }
+
   const doSquare = wantsSquare(caption);
   const doRbg    = wantsRbg(caption);
 
@@ -192,19 +247,15 @@ async function replyWithSticker(msg) {
     if (isImage && !isGif) {
       let work = media;
 
-      if (doRbg) {
-        work = await removeBgFromImage(work);
-      }
-      if (doSquare) {
-        work = await cropImageToSquare(work);
-      }
+      if (doRbg)   work = await removeBgFromImage(work);
+      if (doSquare) work = await cropImageToSquare(work);
 
       const mm = new MessageMedia(work.mimetype, work.data, work.filename || 'sticker.png');
       await sendSticker(msg, mm);
 
-    //   if (doRbg && doSquare) await msg.reply('🪄 Background removed and cropped to 1:1.');
-    //   else if (doRbg)        await msg.reply('🪄 Background removed.');
-    //   else if (doSquare)     await msg.reply('🟩 Cropped to 1:1.');
+      if (doRbg && doSquare) await msg.reply('🪄 Background removed and cropped to 1:1.');
+      else if (doRbg)        await msg.reply('🪄 Background removed.');
+      else if (doSquare)     await msg.reply('🟩 Cropped to 1:1.');
       return;
     }
 
@@ -243,15 +294,14 @@ client.on('message', async (msg) => {
   if (text === 'hi' || text === 'hello') {
     await msg.reply(
       `👋 Welcome! I’m a *Sticker Bot*.\n\n` +
-      `📌 Send an *image* or short *video/GIF* and I’ll make it a sticker.\n` +
-      `🟩 Add *square* (or *1:1*) in the caption to crop square.\n` +
-      `🪄 Add *rbg* in the caption to remove background (images only).\n\n` +
-      `⚙️ Your current credits:\n` +
-      `• Pack: *${name}*\n` +
+      `🟩 Add *square* (or *1:1*) to crop square.\n` +
+      `🪄 Add *rbg* to remove background (images only).\n\n*` +
+      `⚙️ *_Your current credits:_*\n` +
+      `• Pack: *${name}*\n` +f
       `• Author: *${author}*\n\n` +
-      `Update with:\n` +
-      `• Pack name: *name YOURPACK*\n` +
-      `• Author name: *author YOURNAME*`
+      `ℹ️ *_Update with:_*\n` +
+      `• Pack name: name *YOURPACK*\n` +
+      `• Author name: author *YOURNAME*`
     );
     return;
   }
@@ -274,10 +324,28 @@ client.on('message', async (msg) => {
     return;
   }
 
-  // Media
+  // Media (or reply-to-media)
   if (msg.hasMedia || msg.hasQuotedMsg) {
     await replyWithSticker(msg);
   }
+
+  // Set bot mode
+    if (text.startsWith('mode ')) {
+    const val = raw.slice(5).trim().toLowerCase();
+    const newMode = (val === 'true' || val === 'on');
+    
+    if (SETTINGS.requireCaption === newMode) {
+        await msg.reply(`ℹ️ Mode is already set to *${newMode ? 'Caption must include "sticker"' : 'Auto on any media'}*.`);
+        return;
+    }
+
+    const updatedSettings = { ...SETTINGS, requireCaption: newMode };
+    await saveSettings(updatedSettings);
+
+    await msg.reply(`✅ Bot mode saved: *${newMode ? 'Caption must include "sticker"' : 'Auto on any media'}*`);
+    return;
+    }
+
 });
 
 client.initialize();
