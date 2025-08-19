@@ -30,8 +30,8 @@ const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY;
 
 // ====== LOAD / SAVE GLOBAL SETTINGS ======
 let SETTINGS = {
-  defaultPack: 'My Pack',
-  defaultAuthor: 'Sticker Bot',
+  defaultPack: 'YOUSSEF',
+  defaultAuthor: 'IG: ussef.elabassi',
   requireCaption: false,
 };
 
