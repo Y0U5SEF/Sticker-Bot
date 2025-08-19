@@ -21,6 +21,7 @@ const os = require('os');
 const ffmpegPath = require('ffmpeg-static');
 const ffmpeg = require('fluent-ffmpeg');
 const axios = require('axios');
+const express = require('express');
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -386,4 +387,15 @@ client.on('message', async (msg) => {
 
 });
 
-client.initialize();
+// === Express Server for Render ===
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.status(200).send('Bot is running!');
+});
+
+app.listen(PORT, () => {
+  console.log(`Web server listening on port ${PORT}`);
+  client.initialize();
+});
